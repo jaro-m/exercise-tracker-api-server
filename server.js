@@ -3,7 +3,7 @@ const app = express()
 const cors = require('cors')
 const bodyParser = require('body-parser');
 
-const mongoose = require('mongoose');
+const mongoose = require('mongoose')//.set('debug', true);
 mongoose.connect(process.env.MONGODB, { useNewUrlParser: true, useUnifiedTopology: true })
 .then(() => {
   console.log('MongoDB connected!!');
@@ -21,7 +21,7 @@ const exerciseSchema = new Schema({
   userid : {type: String, required: true},
   description: {type: String, required: false},
   duration: {type: Number, required: true},
-  date: {type: String},
+  date: {type: Date},
 })
 
 let User = mongoose.model('User', userSchema);
@@ -40,25 +40,56 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api/users/:_id/logs', function(req, res) {
-  const user = User.findById(req.params._id, function(err, data) {
-    if (!err) {
-      var logs = Exercise.find({userid: req.params._id}, 'description duration date', function(error, exercise_data) {
-        if (!error) {
-          logs = exercise_data;
-        } else {
-          logs = [];
-        };
-        res.json({
-          _id: data._id,
-          username: data.username,
-          count: logs.length,
-          log: logs,
-        });
+  const from_date = (req.query.from && new Date(req.query.from).toString() !== "Invalid Date")
+    ? new Date(req.query.from)
+    : null;
+  const to_date = (req.query.to && new Date(req.query.to).toString() !== "Invalid Date")
+    ? new Date(req.query.to)
+    : null;
+  const limit = isNaN(req.query.limit) ? 0 : Number(req.query.limit);
+
+  let date_params = {userid: req.params._id};
+  let date_range = {};
+
+  if (from_date) {
+    date_range['$gte'] = from_date;
+  }
+  if (to_date) {
+    date_range['$lte'] = to_date;
+  }
+  if (Object.keys(date_range).length > 0) {
+    date_params['date'] = date_range;
+  }
+
+  const user = User.findById(req.params._id);
+  const logs = Exercise.find(
+    date_params,
+    'description duration date',
+    {limit: limit},
+  );
+
+  Promise.all([user, logs])
+    .then(([user_data, log_data]) => {
+      // This is temporary solution to convert Date objects to String
+      let exercises = [];
+      log_data.forEach(log => {
+        exercises.push({
+          description: log.description,
+          duration: log.duration,
+          date: log.date.toDateString(),
+        })
+      })
+
+      res.json({
+        _id: user_data._id,
+        username: user_data.username,
+        count: exercises.length,
+        log: exercises,
       });
-    } else {
-      res.send({error2: err})
-    };
-  });
+    })
+    .catch(err => {
+      res.send(err);
+    });
 });
 
 app.get('/api/users', function(req, res) {
@@ -74,12 +105,11 @@ app.get('/api/users', function(req, res) {
 app.post('/api/users', function(req, res) {
   let user = new User({username: req.body.username});
 
-  try {
-    user.save();
-    res.send(user);
-  } catch (error) {
-    res.send({error: error});
-  }
+  user.save()
+    .then(data => {
+      if (data) res.send(user);
+    })
+  .catch(err => res.send(err));
 });
 
 app.post('/api/users/:_id/exercises', function(req, res) {
@@ -95,26 +125,24 @@ app.post('/api/users/:_id/exercises', function(req, res) {
     duration: req.body.duration,
     date: date.toDateString(),
   });
-  exercise.save(function(err, data) {
-    if (err) {
-      res.send(err);
-    }
-  });
 
-  const user = User.findById(req.params._id, function(err, user_data) {
-    if (!err) {
+  const save_promise = exercise.save();
+  const user_promise = User.findById(req.params._id);
+
+  Promise.all([save_promise, user_promise])
+    .then(([saved_data, user_data]) => {
       const response = {
         _id: user_data._id,
         username: user_data.username,
-        description: exercise.description,
-        duration: exercise.duration,
-        date: exercise.date,
+        description: saved_data.description,
+        duration: saved_data.duration,
+        date: saved_data.date.toDateString(),
       }
       res.json(response);
-    } else {
+    })
+    .catch(err => {
       res.send(err);
-    }
-  });
+    })
 });
 
 const listener = app.listen(process.env.PORT || 3000, () => {
